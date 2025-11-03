@@ -66,15 +66,15 @@
 (let
   (
     (room1 (new-room "Room 1"))
-    (room2 (new-room "Room 2"))
-    (room3 (new-room "Room 3"))
+    ;(room2 (new-room "Room 2"))
+    ;(room3 (new-room "Room 3"))
   )
   (loop
     (setq *game-time* (game-time))
     (setq *idle-mode* t)
     (funcall room1)
-    (funcall room2)
-    (funcall room3)
+    ;(funcall room2)
+    ;(funcall room3)
 
     (if *idle-mode*
       (sleep 0.3)
