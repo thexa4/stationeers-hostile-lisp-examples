@@ -6,5 +6,9 @@ If you want to showcase your script feel free to create a pull request.
 ![Unpowered Airlock Preview](unpowered-airlock.png)
 This implements an airlock that saves power by shutting down if nobody is nearby.
 
+## [Room Manager](room-manager.lisp)
+![Room Manager Preview](room-manager.png)
+A script that can manage turning machines and lights on and of for multiple rooms depending on occupancy.
+
 ## [Auto Power](auto-power.lisp)
 A script that automatically shuts down machines when power becomes too low
