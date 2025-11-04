@@ -2,6 +2,8 @@ This is a collection of example scripts for use with the Stationeers [Hostile Li
 
 If you want to showcase your script feel free to create a pull request.
 
+To install a script, copy contents of the linked script and click the "Flash Clipboard" button.
+
 ## [Unpowered Airlock](unpowered-airlock.lisp)
 ![Unpowered Airlock Preview](unpowered-airlock.png)
 This implements an airlock that saves power by shutting down if nobody is nearby.
