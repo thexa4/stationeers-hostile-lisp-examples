@@ -34,6 +34,11 @@
 (defvar *game-time* (game-time))
 (defvar *idle-mode* t)
 
+; Set title
+(write-char (code-char 27))
+(write-string "]0;Airlock v1")
+(write-char (code-char 7))
+
 (defun filter-nils (lst)
   (loop for x in lst when x collect x)
 )
@@ -140,65 +145,6 @@
           (if occupancy-sensor (setq fetched-occupancy-sensor-activate (stationeers::syscall-device-load-async occupancy-sensor logic-type:quantity)))
           (if proximity-sensor (setq fetched-proximity-sensor-activate (stationeers::syscall-device-load-async proximity-sensor logic-type:quantity)))
         )
-        (handle-power ()
-          (let*
-            (
-              (power-switches (await-all fetched-inputs-power))
-              (power-sum (apply #'+ (loop for x in power-switches when x collect x)))
-              (should-poweroff (> power-sum 0))
-              (lock-switches (await-all fetched-inputs-lock))
-              (lock-sum (apply #'+ (loop for x in lock-switches when x collect x)))
-              (should-lock (> lock-sum 0))
-              (proximity-value (funcall fetched-proximity-sensor-activate))
-              (occupied-value (funcall fetched-occupancy-sensor-activate))
-              (nearby (> (or proximity-value 1) 0.5))
-              (occupied (> (or occupied-value 0) 0.5))
-            )
-
-            (if (not nearby) (setq should-poweroff t))
-            (if state-locked (setq should-poweroff t))
-
-            (if should-poweroff
-              (when state-power
-                (setf (device-logic lamps logic-type:on) 0)
-                (when (or (eq state-current 'inner) (eq state-current 'outer) (eq state-current 'closed))
-                  (write-string prefix)
-                  (write-line " - Powering down")
-                  (setq state-power nil)
-                  (setf (device-logic outer-door logic-type:on) 0)
-                  (setf (device-logic inner-door logic-type:on) 0)
-                )
-              )
-              (when (not state-power)
-                (write-string prefix)
-                (write-line " - Powering up")
-                (setq state-power t)
-                (setf (device-logic lamps logic-type:on) 1)
-                (setf (device-logic outer-door logic-type:on) 1)
-                (setf (device-logic inner-door logic-type:on) 1)
-              )
-            )
-
-            (if should-lock
-              (when (not occupied)
-                (unless state-locked
-                  (write-string prefix)
-                  (write-line " - Locking")
-                  (setf (device-logic outer-door logic-type:lock) 1)
-                  (setf (device-logic inner-door logic-type:lock) 1)
-                  (setq state-locked t)
-                )
-              )
-              (when state-locked
-                (write-string prefix)
-                (write-line " - Unlocking")
-                (setf (device-logic outer-door logic-type:lock) 0)
-                (setf (device-logic inner-door logic-type:lock) 0)
-                (setq state-locked nil)
-              )
-            )
-          )
-        )
         (switch-state (state)
           (setq state-current state)
 
@@ -248,6 +194,7 @@
               (setf (device-logic inner-vent logic-type:mode) 1)
               (setf (device-logic inner-vent logic-type:on) 1)
               (setf (device-logic inner-door logic-type:open) 0)
+              (setf (device-logic inner-door logic-type:mode) 1)
               (setf (device-logic output-closed logic-type:on) 1)
               (setf (device-logic output-inner logic-type:on) 0)
               (setf (device-logic output-outer logic-type:on) 0)
@@ -263,6 +210,7 @@
               (setf (device-logic outer-vent logic-type:mode) 1)
               (setf (device-logic outer-vent logic-type:on) 1)
               (setf (device-logic outer-door logic-type:open) 0)
+              (setf (device-logic outer-door logic-type:mode) 1)
               (setf (device-logic output-closed logic-type:on) 1)
               (setf (device-logic output-inner logic-type:on) 0)
               (setf (device-logic output-outer logic-type:on) 0)
@@ -297,8 +245,79 @@
           (write-string " - State ")
           (print state)
         )
+        (handle-power ()
+          (let*
+            (
+              (power-switches (await-all fetched-inputs-power))
+              (power-sum (apply #'+ (loop for x in power-switches when x collect x)))
+              (should-poweroff (> power-sum 0))
+              (lock-switches (await-all fetched-inputs-lock))
+              (lock-sum (apply #'+ (loop for x in lock-switches when x collect x)))
+              (should-lock (> lock-sum 0))
+              (proximity-value (funcall fetched-proximity-sensor-activate))
+              (occupied-value (funcall fetched-occupancy-sensor-activate))
+              (nearby (> (or proximity-value 1) 0.5))
+              (occupied (> (or occupied-value 0) 0.5))
+            )
+
+            (if (not nearby) (setq should-poweroff t))
+            (if state-locked (setq should-poweroff t))
+
+            (if should-poweroff
+              (when state-power
+                (setf (device-logic lamps logic-type:on) 0)
+                (when (or (eq state-current 'inner) (eq state-current 'outer) (eq state-current 'closed))
+                  (write-string prefix)
+                  (write-line " - Powering down")
+                  (setq state-power nil)
+                  (setf (device-logic outer-door logic-type:on) 0)
+                  (setf (device-logic inner-door logic-type:on) 0)
+                )
+              )
+              (when (not state-power)
+                (write-string prefix)
+                (write-line " - Powering up")
+                (setq state-power t)
+                (setf (device-logic lamps logic-type:on) 1)
+                (setf (device-logic outer-door logic-type:on) 1)
+                (setf (device-logic inner-door logic-type:on) 1)
+              )
+            )
+
+            (if should-lock
+              (when (not occupied)
+                (unless state-locked
+                  (write-string prefix)
+                  (write-line " - Locking")
+                  (stationeers::syscall-device-store-async outer-door logic-type:open 0)
+                  (stationeers::syscall-device-store-async inner-door logic-type:open 0)
+                  (setq state-current 'closed)
+                  (setf (device-logic output-closed logic-type:on) 1)
+                  (setf (device-logic output-inner logic-type:on) 0)
+                  (setf (device-logic output-outer logic-type:on) 0)
+                  (setf (device-logic outer-door logic-type:lock) 1)
+                  (setf (device-logic inner-door logic-type:lock) 1)
+                  
+                  (setq state-locked t)
+                )
+              )
+              (when state-locked
+                (write-string prefix)
+                (write-line " - Unlocking")
+                (setf (device-logic outer-door logic-type:lock) 0)
+                (setf (device-logic inner-door logic-type:lock) 0)
+                (setf (device-logic outer-door logic-type:mode) 1)
+                (setf (device-logic inner-door logic-type:mode) 1)
+                (setq state-locked nil)
+              )
+            )
+          )
+        )
         (handle-state-unknown ()
           ; We just booted and don't know in what state our doors are
+          
+          (stationeers::syscall-device-store-async outer-door logic-type:setting 0)
+          (stationeers::syscall-device-store-async inner-door logic-type:setting 0)
 
           (let
             (
@@ -470,6 +489,8 @@
           )
         )
         (handle-state-depressurize-inner ()
+          (stationeers::syscall-device-store-async outer-door logic-type:setting 0)
+          (stationeers::syscall-device-store-async inner-door logic-type:setting 0)
           (let*
             (
               (pressure-orig (funcall fetched-gas-sensor-pressure))
@@ -489,6 +510,8 @@
           )
         )
         (handle-state-depressurize-outer ()
+          (stationeers::syscall-device-store-async outer-door logic-type:setting 0)
+          (stationeers::syscall-device-store-async inner-door logic-type:setting 0)
           (let*
             (
               (pressure-orig (funcall fetched-gas-sensor-pressure))
@@ -508,6 +531,8 @@
           )
         )
         (handle-state-pressurize-inner ()
+          (stationeers::syscall-device-store-async outer-door logic-type:setting 0)
+          (stationeers::syscall-device-store-async inner-door logic-type:setting 0)
           (let*
             (
               (pressure-target (- state-inner-pressure *allowed-pressure-delta*))
@@ -527,6 +552,8 @@
           )
         )
         (handle-state-pressurize-outer ()
+          (stationeers::syscall-device-store-async outer-door logic-type:setting 0)
+          (stationeers::syscall-device-store-async inner-door logic-type:setting 0)
           (let*
             (
               (pressure-target (- state-outer-pressure *allowed-pressure-delta*))
@@ -563,8 +590,6 @@
             (pressurize-outer (handle-state-pressurize-outer))
           )
         )
-        (setf (device-logic outer-door logic-type:setting) 0)
-        (setf (device-logic inner-door logic-type:setting) 0)
 
         (setf *idle-mode* (and *idle-mode* (not state-power)))
       )
