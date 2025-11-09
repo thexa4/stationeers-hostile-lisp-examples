@@ -19,7 +19,7 @@
       (block nil
         (setq quantity (funcall quantity-request))
         (if (null (or quantity))
-          (funcall fail "arc furnacek disappeared")
+          (funcall fail "occupancy sensor disappeared")
         )
 
         (if (> quantity 0.5)
