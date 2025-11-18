@@ -9,7 +9,7 @@
     (if (>= counter 9)
       (setq counter 0)
     )
-    (>= (* pct 8.01) counter)
+    (> (* pct 8.01) counter)
   )
 )
 
