@@ -96,9 +96,9 @@
             (ensure-power filter-volatiles is-filtering-volatiles should-filter-volatiles)
 
             (when filtration-done
-              (ensure-power filter-co2 is-filtering-co2 nil)
-              (ensure-power filter-nitrogen is-filtering-nitrogen nil)
-              (ensure-power filter-volatiles is-filtering-volatiles nil)
+              (ensure-power filter-co2 should-filter-co2 nil)
+              (ensure-power filter-nitrogen should-filter-nitrogen nil)
+              (ensure-power filter-volatiles should-filter-volatiles nil)
 
               (setq state 'draining)
             )
