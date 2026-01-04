@@ -112,7 +112,7 @@
           (is-exhaust-pressure-low (< exhaust-pressure (+ exhaust-pressure-setpoint exhaust-pressure-bandwidth)))
           (is-exhaust-pressure-high (>= exhaust-pressure exhaust-pressure-setpoint))
           (is-steam-pressure-high (> box-pressure (+ steam-pressure-setpoint steam-pressure-bandwidth)))
-          (is-furnace-drain-active(> furnace-drain-setting 0.0))
+          (is-furnace-drain-active (> furnace-drain-setting 0.0))
 
           (should-burn-fuel (and is-steam-temperature-low is-exhaust-pressure-low is-fuel-available))
           (should-mix-fuel (and is-steam-temperature-low is-exhaust-pressure-low (not is-fuel-overpressured)))
@@ -126,8 +126,10 @@
           (furnace-drain-pwm-outcome (funcall furnace-drain-pwm *draining-rate*))
           (should-drain-steam (and steam-drain-pwm-outcome is-steam-pressure-high))
           (should-drain-exhaust (and exhaust-drain-pwm-outcome is-exhaust-pressure-high))
-          (shoudd-drain-furnace (and furnace-drain-pwm-outcome is-furnace-drain-active))
+          (should-drain-furnace (and furnace-drain-pwm-outcome is-furnace-drain-active))
         )
+
+        (ensure-power furnace-drain is-draining-furnace should-drain-furnace)
 
         (when (eq *operation-state* 'cold)
           (ensure-power combustor is-combusting nil)
