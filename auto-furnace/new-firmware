@@ -1,0 +1,862 @@
+
+; Fetch code stream
+(defvar *code-stream* nil)
+(set-dispatch-macro-character #\# #\% #'(lambda (s c p) (setq *code-stream* s) (values)))
+#%
+(hostile-lisp:stream-override-attribution "os-macros.lisp" 0 1 *code-stream*)
+; Set title
+(write-char (code-char 27))
+(write-string "]0;AutoFurnace v1")
+(write-char (code-char 7))
+
+(defun pwm (counter)
+  (lambda (pct)
+    (setq counter (+ counter 1))
+    (if (>= counter 9)
+      (setq counter 0)
+    )
+    (> (* pct 8.01) counter)
+  )
+)
+
+(defun ensure-power (device currently-on should-on)
+  (if (and currently-on (not should-on))
+    (stationeers::syscall-device-store-async device logic-type:on 0)
+  )
+  (if (and (not currently-on) should-on)
+    (stationeers::syscall-device-store-async device logic-type:on 1)
+  )
+)
+
+(defmacro essential (module)
+  `(let
+    (
+      (result ,module)
+    )
+    (unless result
+      (error ,(concatenate 'string "Module " (symbol-name (car module)) " failed to load"))
+    )
+    result
+  )
+)
+
+(defmacro prefetch (defs &rest forms)
+  (let*
+    (
+      (precache-syms (loop for def in defs collect (cons (car def) (gensym (symbol-name (car def))))))
+      (precache-vars (loop for lookup in precache-syms collect (cons (cdr lookup) (cons nil nil))))
+      (precache-forms (loop for lookup in precache-syms for def in defs collect `(setq ,(cdr lookup) ,@(cdr def))))
+      (real-vars (loop for lookup in precache-syms collect `(,(car lookup) (funcall ,(cdr lookup)))))
+    )
+    `(let
+      (
+        ,@precache-vars
+      )
+      (cons (lambda ()
+        ; Prefetch
+        ,@precache-forms
+      ) (lambda ()
+        ; Update
+        (let
+          (
+            ,@real-vars
+          )
+          ,@forms
+        )
+      ))
+    )
+  )
+)
+
+(defmacro module (name args &rest forms)
+  `(defun ,name ,args
+    (block nil
+      (handler-bind
+        (
+          (error #'(lambda (cnd)
+            (write-string "ERR ")
+            (write-string ,(symbol-name name))
+            (write-string ": ")
+            (write-line (slot-value cnd 'message))
+            (return nil)
+          ))
+          (warning #'(lambda (cnd)
+            (write-string "WRN ")
+            (write-string ,(symbol-name name))
+            (write-string ": ")
+            (write-line (slot-value cnd 'message))
+            nil
+          ))
+        )
+        ,@forms
+      )
+    )
+  )
+)
+(write-line "Loading modules")
+(hostile-lisp:stream-override-attribution "cooling-loop.lisp" 0 1 *code-stream*)
+
+(module cooling-loop (&key (temperature-setpoint 283) (pressure-setpoint 20000) (temperature-min 273) (pressure-min 5) (pressure-bandwidth 1000) (temperature-management-min-pressure 10))
+  (let
+    (
+      (vent (device :name "Cooling Loop - Active Vent"))
+      (drain (device :name "Cooling Loop - Drain"))
+    )
+    (unless vent
+      (error "Missing 'Cooling Loop - Active Vent'")
+    )
+    (unless drain
+      (error "Missing 'Cooling Loop - Drain'")
+    )
+    (setf (device-logic vent logic-type:on) 0)
+    (setf (device-logic vent logic-type:mode) 1)
+    (setf (device-logic vent logic-type:lock) 1)
+    (setf (device-logic drain logic-type:on) 0)
+    (setf (device-logic drain logic-type:setting) 10)
+
+    (prefetch
+      (
+        (temperature (stationeers::syscall-device-load-async vent logic-type:temperature-output))
+        (pressure (stationeers::syscall-device-load-async vent logic-type:pressure-output))
+        (vent-active (stationeers::syscall-device-load-async vent logic-type:on))
+        (drain-active (stationeers::syscall-device-load-async drain logic-type:on))
+      )
+
+      (let
+        (
+          (should-pressurize nil)
+          (should-drain nil)
+          (is-draining nil)
+          (is-pressurizing nil)
+          (drain-speed 0)
+        )
+
+        (setq is-draining (> drain-active 0.5))
+        (setq is-pressurizing (> vent-active 0.5))
+
+        ; Checks
+        (if (> pressure pressure-setpoint)
+          (setq should-drain t)
+          (setq drain-speed 10)
+        )
+        (when (and is-draining (> pressure (- pressure-setpoint pressure-bandwidth)))
+          (setq should-drain t)
+          (setq drain-speed 10)
+        )
+
+        (if (< pressure pressure-min)
+          (setq should-pressurize t)
+        )
+
+        (when (> pressure temperature-management-min-pressure)
+          (when (< temperature temperature-min)
+            (setq should-drain t)
+            (setq drain-speed 0.1)
+          )
+
+          (if (> temperature temperature-setpoint)
+            (setq should-pressurize t)
+          )
+        )
+
+        ; Execute
+        (if should-drain
+          (stationeers::syscall-device-store-async drain logic-type:setting drain-speed)
+        )
+
+        (ensure-power drain is-draining should-drain)
+        (ensure-power vent is-pressurizing should-pressurize)
+      )
+    )
+  )
+)
+(hostile-lisp:stream-override-attribution "pipe-buster.lisp" 0 1 *code-stream*)
+
+(module pipe-burster (&key (target-pressure 10000) (box-pressure-max 100))
+  (let*
+    (
+      (pressurizer (or (device :name "Boiler - Pipe Buster") (device :name "Boiler - Pipe Buster - Done")))
+      (pressurizer-name (device-name pressurizer))
+      (box-pressure-sensor (device :name "Boiler - Box Sensor"))
+      (box-pressure (device-logic box-pressure-sensor logic-type:pressure))
+    )
+    (unless pressurizer
+      (error "Missing 'Boiler - Pipe Buster'")
+    )
+    (unless box-pressure-sensor
+      (error "Missing 'Boiler - Box Sensor'")
+    )
+    (setf (device-logic pressurizer logic-type:on) 0)
+    (setf (device-logic pressurizer logic-type:setting) 0)
+
+    (unless (string= pressurizer-name "Boiler - Pipe Buster - Done")
+      (if (> box-pressure box-pressure-max)
+        (error "Box pressure is too high")
+      )
+
+      (warn "Starting pipe burst")
+      (let
+        (
+          (cooling-manager (cooling-loop))
+        )
+        (setf (device-logic pressurizer logic-type:setting) target-pressure)
+        (setf (device-logic pressurizer logic-type:on) 1)
+
+        (tagbody
+        start
+          ; Prefetch
+          (funcall (car cooling-manager))
+          (setq box-pressure (device-logic box-pressure-sensor logic-type:pressure))
+
+          ; Run
+          (funcall (cdr cooling-manager))
+          
+          (if (< box-pressure box-pressure-max)
+            (go start)
+          )
+        )
+
+        (setf (device-name pressurizer) "Boiler - Pipe Buster - Done")
+        (setf (device-logic pressurizer logic-type:on) 0)
+        (setf (device-logic pressurizer logic-type:setting) 0)
+        (warn "Done")
+      )
+    )
+  )
+)
+(hostile-lisp:stream-override-attribution "boiler.lisp" 0 1 *code-stream*)
+
+(module boiler (&key
+    (steam-pressure-setpoint 1000)
+    (steam-pressure-bandwidth 50)
+    (steam-temperature-setpoint 2273.15)
+    (exhaust-pressure-setpoint 2300)
+    (exhaust-pressure-bandwidth 100)
+    (condenser-max-pressure 3100)
+    (max-fuel-pressure 100)
+    (fuel-ratio 33.33333)
+    (hot-state-threshold 500)
+  )
+  (let
+    (
+      (steam-feeder (device :name "Boiler - Steam Feeder"))
+      (box-sensor (device :name "Boiler - Box Sensor"))
+      (combustor (device :name "Boiler - Combustor"))
+      (furnace (device :name "Boiler - Furnace"))
+      (fuel-mixer (device :name "Fuel - Mixer"))
+      (steam-drain (device :name "Boiler - Steam Drain"))
+      (exhaust-drain (device :name "Boiler - Exhaust Drain"))
+      (furnace-drain (device :name "Furnace - Drain"))
+      (condenser-water-sensor (device :name "Condenser - Water Sensor"))
+      (steam-drain-pwm (pwm 0))
+      (exhaust-drain-pwm (pwm 3))
+      (furnace-drain-pwm (pwm 6))
+    )
+    (unless steam-feeder
+      (error "Missing 'Boiler - Steam Feeder'")
+    )
+    (unless box-sensor
+      (error "Missing 'Boiler - Box Sensor'")
+    )
+    (unless combustor
+      (error "Missing 'Boiler - Combustor'")
+    )
+    (unless furnace
+      (error "Missing 'Boiler - Furnace'")
+    )
+    (unless steam-drain
+      (error "Missing 'Boiler - Steam Drain'")
+    )
+    (unless exhaust-drain
+      (error "Missing 'Boiler - Exhaust Drain'")
+    )
+    (unless fuel-mixer
+      (error "Missing 'Fuel - Mixer'")
+    )
+    (unless condenser-water-sensor
+      (error "Missing 'Condenser - Water Sensor'")
+    )
+    (unless furnace-drain
+      (error "Missing 'Furnace - Drain'")
+    )
+
+    ; State reset
+    (setf (device-logic combustor logic-type:on) 0)
+    (setf (device-logic steam-feeder logic-type:on) 0)
+    (setf (device-logic steam-feeder logic-type:setting) 1)
+    (setf (device-logic fuel-mixer logic-type:on) 0)
+    (setf (device-logic fuel-mixer logic-type:setting) fuel-ratio)
+    (setf (device-logic steam-drain logic-type:on) 0)
+    (setf (device-logic steam-drain logic-type:setting) 10)
+    (setf (device-logic exhaust-drain logic-type:on) 0)
+    (setf (device-logic exhaust-drain logic-type:setting) 10)
+    (setf (device-logic furnace-drain logic-type:on) 0)
+
+    ; Infer state
+    (setq *operation-state* (if (< (device-logic box-sensor logic-type:temperature) hot-state-threshold) 'cold 'hot))
+
+    (when (eq *operation-state* 'cold)
+      (warn "Starting furnace drain")
+    )
+
+    (prefetch
+      (
+        (box-temperature (stationeers::syscall-device-load-async box-sensor logic-type:temperature))
+        (box-pressure (stationeers::syscall-device-load-async box-sensor logic-type:pressure))
+        (exhaust-temperature (stationeers::syscall-device-load-async furnace logic-type:temperature))
+        (exhaust-pressure (stationeers::syscall-device-load-async furnace logic-type:pressure))
+        (fuel-temperature (stationeers::syscall-device-load-async combustor logic-type:temperature-input))
+        (fuel-pressure (stationeers::syscall-device-load-async combustor logic-type:pressure-input))
+        (fuel-oxygen-ratio (stationeers::syscall-device-load-async combustor logic-type:ratio-oxigen-input))
+        (fuel-volatiles-ratio (stationeers::syscall-device-load-async combustor logic-type:ratio-volatiles-input))
+        (furnace-drain-setting (stationeers::syscall-device-load-async furnace-drain logic-type:setting))
+
+        (condenser-water-level (stationeers::syscall-device-load-async condenser-water-sensor logic-type:volume-of-liquid))
+        (condenser-pollutant-level (stationeers::syscall-device-load-async condenser-water-sensor logic-type:ratio-liquid-pollutant))
+
+        (combustor-on (stationeers::syscall-device-load-async combustor logic-type:on))
+        (fuel-mixer-on (stationeers::syscall-device-load-async fuel-mixer logic-type:on))
+        (steam-feeder-on (stationeers::syscall-device-load-async steam-feeder logic-type:on))
+        (steam-drain-on (stationeers::syscall-device-load-async steam-drain logic-type:on))
+        (exhaust-drain-on (stationeers::syscall-device-load-async exhaust-drain logic-type:on))
+        (furnace-drain-on (stationeers::syscall-device-load-async furnace-drain logic-type:on))
+      )
+
+      (let*
+        (
+          (is-combusting (> combustor-on 0.5))
+          (is-feeding-steam (> steam-feeder-on 0.5))
+          (is-mixing-fuel (> fuel-mixer-on 0.5))
+          (is-draining-steam (> steam-drain-on 0.5))
+          (is-draining-exhaust (> exhaust-drain-on 0.5))
+          (is-draining-furnace (> furnace-drain-on 0.5))
+
+          (box-pressure-ratio (/ box-pressure steam-pressure-setpoint))
+          (box-temperature-ratio (/ box-temperature steam-temperature-setpoint))
+          (is-fuel-available (> fuel-pressure 1))
+          (is-fuel-overpressured (> fuel-pressure max-fuel-pressure))
+          (is-steam-temperature-low (< box-temperature steam-temperature-setpoint))
+          (is-exhaust-pressure-low (< exhaust-pressure (+ exhaust-pressure-setpoint exhaust-pressure-bandwidth)))
+          (is-exhaust-pressure-high (>= exhaust-pressure exhaust-pressure-setpoint))
+          (is-steam-pressure-high (> box-pressure (+ steam-pressure-setpoint steam-pressure-bandwidth)))
+          (is-furnace-drain-active(> furnace-drain-setting 0.0))
+
+          (should-burn-fuel (and is-steam-temperature-low is-exhaust-pressure-low is-fuel-available))
+          (should-mix-fuel (and is-steam-temperature-low is-exhaust-pressure-low (not is-fuel-overpressured)))
+          (should-feed-steam (and
+              (< box-pressure-ratio box-temperature-ratio)
+              (> box-temperature 2000)
+            )
+          )
+          (steam-drain-pwm-outcome (funcall steam-drain-pwm *draining-rate*))
+          (exhaust-drain-pwm-outcome (funcall exhaust-drain-pwm *draining-rate*))
+          (furnace-drain-pwm-outcome (funcall furnace-drain-pwm *draining-rate*))
+          (should-drain-steam (and steam-drain-pwm-outcome is-steam-pressure-high))
+          (should-drain-exhaust (and exhaust-drain-pwm-outcome is-exhaust-pressure-high))
+          (shoudd-drain-furnace (and furnace-drain-pwm-outcome is-furnace-drain-active))
+        )
+
+        (when (eq *operation-state* 'cold)
+          (ensure-power combustor is-combusting nil)
+          (ensure-power steam-feeder is-feeding-steam nil)
+          (ensure-power fuel-mixer is-mixing-fuel nil)
+          
+          (setq *next-filtration-required* (or *next-filtration-required* (> box-pressure 0) (> exhaust-pressure 0)))
+          
+          (ensure-power steam-drain is-draining-steam (and steam-drain-pwm-outcome (> box-pressure 0)))
+          (ensure-power exhaust-drain is-draining-exhaust (and exhaust-drain-pwm-outcome (> exhaust-pressure 0)))
+        )
+
+        (when (eq *operation-state* 'hot)
+          (setq *next-filtration-required* t)
+          (ensure-power combustor is-combusting should-burn-fuel)
+          (ensure-power fuel-mixer is-mixing-fuel should-mix-fuel)
+          (ensure-power steam-feeder is-feeding-steam should-feed-steam)
+
+          (ensure-power steam-drain is-draining-steam should-drain-steam)
+          (ensure-power exhaust-drain is-draining-exhaust should-drain-exhaust)
+        )
+      )
+    )
+  )
+)
+(hostile-lisp:stream-override-attribution "condensation.lisp" 0 1 *code-stream*)
+
+(module condensation (&key
+    (temperature-bandwidth 17)
+    (temperature-setpoint 276)
+    (pressure-setpoint 3000)
+    (pressure-bandwidth 200)
+  )
+  (let
+    (
+      (storage-sensor (device :name "Condenser - Storage Sensor"))
+      (drain (device :name "Condenser - Drain"))
+      (water-sensor (device :name "Condenser - Water Sensor"))
+      (water-overflow (device :name "Condenser - Water Overflow"))
+    )
+    (unless storage-sensor
+      (error "Missing 'Condenser - Storage Sensor'")
+    )
+    (unless drain
+      (error "Missing 'Condenser - Drain'")
+    )
+    (unless water-sensor
+      (error "Missing 'Condenser - Water Sensor'")
+    )
+    (unless water-overflow
+      (error "Missing 'Condenser - Water Overflow'")
+    )
+
+    ; State reset
+    (setf (device-logic drain logic-type:on) 0)
+    (setf (device-logic drain logic-type:setting) 10)
+    (setf (device-logic water-overflow logic-type:on) 0)
+    (setf (device-logic water-overflow logic-type:setting) 90)
+    (setf (device-logic storage-sensor logic-type:on) 0)
+    (setf (device-logic storage-sensor logic-type:lock) 1)
+    (setf (device-logic water-sensor logic-type:on) 0)
+    (setf (device-logic water-sensor logic-type:lock) 1)
+
+    (prefetch
+      (
+        (storage-temperature (stationeers::syscall-device-load-async storage-sensor logic-type:temperature-output))
+        (storage-pressure (stationeers::syscall-device-load-async storage-sensor logic-type:pressure-output))
+        (water-pressure (stationeers::syscall-device-load-async water-sensor logic-type:pressure-output))
+        (water-temperature (stationeers::syscall-device-load-async water-sensor logic-type:temperature-output))
+        (water-purity (stationeers::syscall-device-load-async water-sensor logic-type:ratio-water-output))
+        (water-moles (stationeers::syscall-device-load-async water-sensor logic-type:total-moles-output))
+
+        (drain-on (stationeers::syscall-device-load-async drain logic-type:on))
+        (water-overflow-on (stationeers::syscall-device-load-async water-overflow logic-type:on))
+      )
+
+      (let*
+        (
+          (is-draining (> drain-on 0.5))
+          (is-water-overflowing (> water-overflow-on 0.5))
+          (is-storage-pressure-high (> storage-pressure pressure-setpoint))
+          (is-storage-pressure-too-high (> storage-pressure (+ pressure-setpoint pressure-bandwidth)))
+          (temperature-ratio (+ 1 (/ (- temperature-setpoint storage-temperature) temperature-bandwidth)))
+
+          (should-drain (and is-storage-pressure-too-high *filtration-open* (> temperature-ratio 0)))
+          (should-water-overflow (and (> water-moles 3240) (>= water-purity 1)))
+        )
+
+        (if (> temperature-ratio 1) (setq temperature-ratio 1))
+        (if (< temperature-ratio 0) (setq temperature-ratio 0))
+
+        (if is-storage-pressure-too-high (setq temperature-ratio 0))
+        (setq *next-draining-rate* temperature-ratio)
+        (if (= storage-pressure 0) (setq *next-draining-rate* 1))
+
+        (unless (or *filtration-required* (eq *operation-state* 'hot))
+          (setq should-drain (and *filtration-open* (> temperature-ratio 0) (> storage-pressure 0)))
+        )
+
+        (ensure-power drain is-draining should-drain)
+        (ensure-power water-overflow is-water-overflowing should-water-overflow)
+      )
+    )
+  )
+)
+(hostile-lisp:stream-override-attribution "filtration.lisp" 0 1 *code-stream*)
+
+(module filtration
+  (&key
+    (buffer-max-pressure 1000)
+    (buffer-min-pressure 50)
+    (filtration-epsilon 0.01)
+    (gas-max-pressure 19500)
+  )
+  (let
+    (
+      (drain (device :name "Filtration - Drain"))
+      (filter-co2 (device :name "Filtration - CO2"))
+      (filter-volatiles (device :name "Filtration - V"))
+      (filter-nitrogen (device :name "Filtration - N"))
+
+      (state 'buffering)
+    )
+    (unless drain
+      (error "Missing 'Filtration - Drain'")
+    )
+    (unless filter-co2
+      (error "Missing 'Filtration - CO2'")
+    )
+    (unless filter-nitrogen
+      (error "Missing 'Filtration - N'")
+    )
+    (unless filter-volatiles
+      (error "Missing 'Filtration - V'")
+    )
+
+    (setf (device-logic drain logic-type:on) 0)
+    (setf (device-logic drain logic-type:setting) 10)
+    (setf (device-logic filter-co2 logic-type:on) 0)
+    (setf (device-logic filter-nitrogen logic-type:on) 0)
+    (setf (device-logic filter-volatiles logic-type:on) 0)
+
+    (prefetch
+      (
+        (buffer-pressure (stationeers::syscall-device-load-async filter-co2 logic-type:pressure-input))
+        (drain-active (stationeers::syscall-device-load-async drain logic-type:on))
+        (co2-pressure (stationeers::syscall-device-load-async filter-co2 logic-type:pressure-output))
+        (co2-active (stationeers::syscall-device-load-async filter-co2 logic-type:on))
+        (co2-filter0-remaining (stationeers::syscall-device-slot-load-async filter-co2 0 logic-slot-type:quantity))
+        (co2-filter1-remaining (stationeers::syscall-device-slot-load-async filter-co2 1 logic-slot-type:quantity))
+        (co2-ratio (stationeers::syscall-device-load-async filter-co2 logic-type:ratio-carbon-dioxide-input))
+        (nitrogen-pressure (stationeers::syscall-device-load-async filter-nitrogen logic-type:pressure-output))
+        (nitrogen-active (stationeers::syscall-device-load-async filter-nitrogen logic-type:on))
+        (nitrogen-filter0-remaining (stationeers::syscall-device-slot-load-async filter-nitrogen 0 logic-slot-type:quantity))
+        (nitrogen-filter1-remaining (stationeers::syscall-device-slot-load-async filter-nitrogen 1 logic-slot-type:quantity))
+        (nitrogen-ratio (stationeers::syscall-device-load-async filter-co2 logic-type:ratio-nitrogen-input))
+        (volatiles-pressure (stationeers::syscall-device-load-async filter-volatiles logic-type:pressure-output))
+        (volatiles-active (stationeers::syscall-device-load-async filter-volatiles logic-type:on))
+        (volatiles-filter0-remaining (stationeers::syscall-device-slot-load-async filter-volatiles 0 logic-slot-type:quantity))
+        (volatiles-filter1-remaining (stationeers::syscall-device-slot-load-async filter-volatiles 1 logic-slot-type:quantity))
+        (volatiles-ratio (stationeers::syscall-device-load-async filter-co2 logic-type:ratio-volatiles-input))
+      )
+
+      (let*
+        (
+          (has-buffer-space-available (< buffer-pressure buffer-max-pressure))
+          (is-buffer-empty (< buffer-pressure buffer-min-pressure))
+          (is-draining (> drain-active 0.5))
+
+          (co2-has-filter (> (+ co2-filter0-remaining co2-filter1-remaining) 0))
+          (co2-has-room (< co2-pressure gas-max-pressure))
+          (is-filtering-co2 (> co2-active 0.5))
+
+          (nitrogen-has-filter (> (+ nitrogen-filter0-remaining nitrogen-filter1-remaining) 0))
+          (nitrogen-has-room (< nitrogen-pressure gas-max-pressure))
+          (is-filtering-nitrogen (> nitrogen-active 0.5))
+          
+          (volatiles-has-filter (> (+ volatiles-filter0-remaining volatiles-filter1-remaining) 0))
+          (volatiles-has-room (< volatiles-pressure gas-max-pressure))
+          (is-filtering-volatiles (> volatiles-active 0.5))
+
+          (highest-ratio (max co2-ratio nitrogen-ratio volatiles-ratio))
+
+          (reference-ratio (- highest-ratio filtration-epsilon))
+          (should-filter-co2 (and (> co2-ratio reference-ratio) co2-has-room co2-has-filter))
+          (should-filter-nitrogen (and (> nitrogen-ratio reference-ratio) nitrogen-has-room nitrogen-has-filter))
+          (should-filter-volatiles (and (> volatiles-ratio reference-ratio) volatiles-has-room volatiles-has-filter))
+
+          (filtration-done (< reference-ratio 0))
+        )
+
+        (case state
+          (buffering
+            (if has-buffer-space-available
+              (setq *next-filtration-open* t)
+              (setq state 'filtering)
+            )
+          )
+          (filtering
+            (ensure-power filter-co2 is-filtering-co2 should-filter-co2)
+            (ensure-power filter-nitrogen is-filtering-nitrogen should-filter-nitrogen)
+            (ensure-power filter-volatiles is-filtering-volatiles should-filter-volatiles)
+
+            (when filtration-done
+              (ensure-power filter-co2 should-filter-co2 nil)
+              (ensure-power filter-nitrogen should-filter-nitrogen nil)
+              (ensure-power filter-volatiles should-filter-volatiles nil)
+
+              (setq state 'draining)
+            )
+          )
+          (draining
+            (ensure-power drain is-draining (not is-buffer-empty))
+            
+            (if is-buffer-empty (setq state 'buffering))
+          )
+        )
+      )
+    )
+  )
+)
+(hostile-lisp:stream-override-attribution "room-pressure-control.lisp" 0 1 *code-stream*)
+(module room-pressure-control (&key
+    (target-moles 0)
+  )
+  (let
+    (
+      (gas-sensor (device :name "Furnace - Gas Sensor"))
+      (vent-in (device :name "Furnace - Box Outward"))
+      (vent-out (device :name "Furnace - Box Inward"))
+    )
+    (unless gas-sensor
+      (error "Missing 'Furnace - Gas Sensor'")
+    )
+    (unless vent-in
+      (error "Missing 'Furnace - Smart Vent In'")
+    )
+    (unless vent-out
+      (error "Missing 'Furnace - Smart Vent Out'")
+    )
+    
+    ; State reset
+    (setf (device-logic gas-sensor logic-type:power) 1)
+
+    (setf (device-logic vent-in logic-type:mode) 0)
+    (setf (device-logic vent-in logic-type:lock) 1)
+    (setf (device-logic vent-in logic-type:power) 0)
+    
+    (setf (device-logic vent-out logic-type:mode) 1)
+    (setf (device-logic vent-out logic-type:lock) 1)
+    (setf (device-logic vent-out logic-type:power) 0)
+
+    ; Infer state
+    ; Ony assume pressurized state if room is at target contents or more.
+    ; Can be in an overpressured state
+    (setq *room-pressure-goal* (if (< (device-logic gas-sensor logic-type:total-moles) target-moles) 'vacuum 'pressurized))
+    (setq idling (if (eq *room-pressure-goal* 'pressurized) 'vacuum 'pressurized))
+
+    (prefetch
+      (
+        (room-moles (stationeers::syscall-device-load-async gas-sensor logic-type:total-moles))
+        (room-pressure (stationeers::syscall-device-load-async gas-sensor logic-type:pressure))
+        (vent-in-on (stationeers::syscall-device-load-async vent-in logic-type:on))
+        (vent-out-on (stationeers::syscall-device-load-async vent-out logic-type:on))
+      )
+
+      (let*
+        (
+          (make-room-pressurized (eq *room-pressure-goal* 'pressurized))
+          (is-in-on (> vent-in-on 0.5))
+          (is-out-on (> vent-out-on 0.5))
+
+
+          (at-low-atmos (< room-moles target-moles))
+          (has-atmosphere (/= room-pressure 0))
+
+          (when (and make-room-pressurized (not at-low-atmos))
+            (setq idling 'pressurized)
+          )
+          (when (and (not make-room-pressurized) (not has-atmosphere))
+            (setq idling 'vacuum)
+          )
+          (is-idling (eq *room-pressure-goal* idling))
+          
+          (is-pressurizing (and (not idling) (and make-room-pressurized at-low-atmos)))
+          (is-depressurizing (and (not idling) (and (not make-room-pressurized) has-atmosphere)))
+        )
+
+        (when is-pressurizing 
+          (stationeers::syscall-device-store-async vent-in logic-type:pressure-external (+ room-pressure 1))
+        )
+
+        (ensure-power vent-in is-in-on is-pressurizing)
+        (ensure-power vent-out is-out-on is-depressurizing)
+      )
+    )
+  )
+)
+(hostile-lisp:stream-override-attribution "ui.lisp" 0 1 *code-stream*)
+
+(defun graphics-mode-on ()
+  "Switch to graphics screen buffer"
+  (write-char (code-char 27))
+  (write-string "[?1049h")
+)
+
+(defun set-cursor-pos (x y)
+  "Set console cursor pos"
+  (write-char (code-char 27))
+  (write-char #\[)
+  (write-string (write-to-string y))
+  (write-char #\;)
+  (write-string (write-to-string x))
+  (write-char #\H)
+)
+
+(defun hide-cursor ()
+  (write-char (code-char 27))
+  (write-string "[?25l")
+)
+
+(module ui ()
+  (let
+    (
+      (box-sensor (device :name "Boiler - Box Sensor"))
+      (furnace (device :name "Boiler - Furnace"))
+      (text-buffer-active t)
+      (has-char nil)
+      (last-char nil)
+      (furnace-room-gas-sensor (device :name "Furnace - Gas Sensor"))
+    )
+    (unless box-sensor
+      (error "Missing 'Boiler - Box Sensor'")
+    )
+    (unless furnace-room-gas-sensor
+      (error "Missing 'Furnace - Gas Sensor'")
+    )
+
+
+    (prefetch
+      (
+        (box-temperature (stationeers::syscall-device-load-async box-sensor logic-type:temperature))
+        (box-pressure (stationeers::syscall-device-load-async box-sensor logic-type:pressure))
+        (furnace-temperature (stationeers::syscall-device-load-async furnace logic-type:temperature))
+        (furnace-pressure (stationeers::syscall-device-load-async furnace logic-type:pressure))
+        (furnace-content (stationeers::syscall-device-load-async furnace logic-type:recipe-hash))
+        (furnace-open-state (stationeers::syscall-device-load-async furnace logic-type:open))
+        (furnace-room-pressure (stationeers::syscall-device-load-async furnace-room-gas-sensor logic-type:pressure))
+        (furnace-room-moles (stationeers::syscall-device-load-async furnace-room-gas-sensor logic-type:total-moles))
+      )
+
+      (setq has-char (listen))
+      (tagbody
+        start
+        (when has-char
+          (setq last-char (read-char))
+          (setq has-char (listen))
+          (go start)
+        )
+      )
+
+      (when text-buffer-active
+        (setq text-buffer-active nil)
+        (hide-cursor)
+        (graphics-mode-on)
+      )
+
+      (when (eql last-char #\!)
+        (setq last-char nil)
+        (setq *operation-state* (if (eq *operation-state* 'cold)
+          'hot
+          'cold
+        ))
+      )
+
+      (when (eql last-char #\e)
+        (setq last-char nil)
+        (if (> furnace-open-state 0.5)
+          (stationeers::syscall-device-store-async furnace logic-type:open 0)
+          (stationeers::syscall-device-store-async furnace logic-type:open 1)
+        )
+      )
+
+      (when (eql last-char #\@)
+        (setq last-char nil)
+        (setq *room-pressure-goal* (if (eq *room-pressure-goal* 'pressurized)
+          'vacuum
+          'pressurized
+        ))
+      )
+
+      (set-cursor-pos 1 1)
+      (write-string "Operating mode: ")
+      (if (eq *operation-state* 'cold)
+        (write-line "Cold   ")
+        (write-line "Hot    ")
+      )
+
+      (write-line "Steam box:")
+      (write-string (write-to-string (round box-temperature)))
+      (write-line " K       ")
+      (write-string (write-to-string (round box-pressure)))
+      (write-line " kPa      ")
+      (terpri)
+      
+      (write-line "Boiler furnace:")
+      (write-string (write-to-string (round furnace-temperature)))
+      (write-line " K       ")
+      (write-string (write-to-string (round furnace-pressure)))
+      (write-line " kPa      ")
+      (terpri)
+
+      (write-line "Furnace room:")
+      (write-string "Mode:")
+      (if (eq *room-pressure-goal* 'pressurized)
+        (write-line "Pressurized")
+        (write-line "Vacuum     ")
+      )
+      (write-string (write-to-string (round furnace-room-pressure)))
+      (write-string " kPa (")
+      (write-string (write-to-string (round furnace-room-moles)))
+      (write-line " M)           ")
+      (terpri)
+
+      (write-string "Furnace content: ")
+      (write-string (write-to-string furnace-content))
+      (if (> furnace-open-state 0.5)
+        (write-line " (Open)            ")
+        (write-line " (Close)           ")
+      )
+      (terpri)
+
+      (write-string "Press ! to switch modes: ")
+      (if last-char
+        (write-char last-char)
+      )
+      (write-line "      ")
+    )
+  )
+)
+(hostile-lisp:stream-override-attribution "os-config-start.lisp" 0 1 *code-stream*)
+(defvar *operation-state* 'unknown)
+(defvar *draining-rate* 0)
+(defvar *next-draining-rate* 999)
+(defvar *filtration-open* nil)
+(defvar *next-filtration-open* nil)
+(defvar *filtration-required* t)
+(defvar *next-filtration-required* nil)
+
+(write-line "Configuring modules")
+
+(defvar *loaded-modules* (list(hostile-lisp:stream-override-attribution "config.lisp" 0 1 *code-stream*)
+
+(essential (cooling-loop))
+(pipe-burster)
+(boiler)
+(condensation)
+(filtration)
+(room-pressure-control :target-moles 70)
+(ui)
+(hostile-lisp:stream-override-attribution "os-config-end.lisp" 0 1 *code-stream*)
+
+))
+(hostile-lisp:stream-override-attribution "os-main-loop.lisp" 0 1 *code-stream*)
+
+(defvar *prefetch-depth* 3)
+
+(write-line "Starting control loop")
+
+; TODO: handler-bind
+(setq *loaded-modules* (loop for module in *loaded-modules* if module collect module))
+(loop
+  (let
+    (
+      (cur-prefetch *loaded-modules*)
+    )
+
+    ; Prefetch a few modules
+    (loop repeat *prefetch-depth* do
+      (when cur-prefetch
+        (funcall (car (car cur-prefetch)))
+        (setq cur-prefetch (cdr cur-prefetch))
+      )
+    )
+
+    (loop for module in *loaded-modules* do
+      ; Update
+      (funcall (cdr module))
+
+      ; Do next prefetch
+      (when cur-prefetch
+        (funcall (car (car cur-prefetch)))
+        (setq cur-prefetch (cdr cur-prefetch))
+      )
+    )
+    (setq *draining-rate* (if (> *next-draining-rate* 1) 0 *next-draining-rate*))
+    (setq *next-draining-rate* 999)
+    (setq *filtration-open* *next-filtration-open*)
+    (setq *next-filtration-open* nil)
+    (setq *filtration-required* *next-filtration-required*)
+    (setq *next-filtration-required* nil)
+  )
+)
+
+(write-string "Bye")
