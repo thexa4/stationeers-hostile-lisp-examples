@@ -19,9 +19,11 @@
       (fuel-mixer (device :name "Fuel - Mixer"))
       (steam-drain (device :name "Boiler - Steam Drain"))
       (exhaust-drain (device :name "Boiler - Exhaust Drain"))
+      (furnace-drain (device :name "Furnace - Drain"))
       (condenser-water-sensor (device :name "Condenser - Water Sensor"))
       (steam-drain-pwm (pwm 0))
       (exhaust-drain-pwm (pwm 3))
+      (furnace-drain-pwm (pwm 6))
     )
     (unless steam-feeder
       (error "Missing 'Boiler - Steam Feeder'")
@@ -47,6 +49,9 @@
     (unless condenser-water-sensor
       (error "Missing 'Condenser - Water Sensor'")
     )
+    (unless furnace-drain
+      (error "Missing 'Furnace - Drain'")
+    )
 
     ; State reset
     (setf (device-logic combustor logic-type:on) 0)
@@ -58,6 +63,7 @@
     (setf (device-logic steam-drain logic-type:setting) 10)
     (setf (device-logic exhaust-drain logic-type:on) 0)
     (setf (device-logic exhaust-drain logic-type:setting) 10)
+    (setf (device-logic furnace-drain logic-type:on) 0)
 
     ; Infer state
     (setq *operation-state* (if (< (device-logic box-sensor logic-type:temperature) hot-state-threshold) 'cold 'hot))
@@ -76,6 +82,7 @@
         (fuel-pressure (stationeers::syscall-device-load-async combustor logic-type:pressure-input))
         (fuel-oxygen-ratio (stationeers::syscall-device-load-async combustor logic-type:ratio-oxigen-input))
         (fuel-volatiles-ratio (stationeers::syscall-device-load-async combustor logic-type:ratio-volatiles-input))
+        (furnace-drain-setting (stationeers::syscall-device-load-async furnace-drain logic-type:setting))
 
         (condenser-water-level (stationeers::syscall-device-load-async condenser-water-sensor logic-type:volume-of-liquid))
         (condenser-pollutant-level (stationeers::syscall-device-load-async condenser-water-sensor logic-type:ratio-liquid-pollutant))
@@ -85,6 +92,7 @@
         (steam-feeder-on (stationeers::syscall-device-load-async steam-feeder logic-type:on))
         (steam-drain-on (stationeers::syscall-device-load-async steam-drain logic-type:on))
         (exhaust-drain-on (stationeers::syscall-device-load-async exhaust-drain logic-type:on))
+        (furnace-drain-on (stationeers::syscall-device-load-async furnace-drain logic-type:on))
       )
 
       (let*
@@ -94,6 +102,7 @@
           (is-mixing-fuel (> fuel-mixer-on 0.5))
           (is-draining-steam (> steam-drain-on 0.5))
           (is-draining-exhaust (> exhaust-drain-on 0.5))
+          (is-draining-furnace (> furnace-drain-on 0.5))
 
           (box-pressure-ratio (/ box-pressure steam-pressure-setpoint))
           (box-temperature-ratio (/ box-temperature steam-temperature-setpoint))
@@ -103,6 +112,7 @@
           (is-exhaust-pressure-low (< exhaust-pressure (+ exhaust-pressure-setpoint exhaust-pressure-bandwidth)))
           (is-exhaust-pressure-high (>= exhaust-pressure exhaust-pressure-setpoint))
           (is-steam-pressure-high (> box-pressure (+ steam-pressure-setpoint steam-pressure-bandwidth)))
+          (is-furnace-drain-active(> furnace-drain-setting 0.0))
 
           (should-burn-fuel (and is-steam-temperature-low is-exhaust-pressure-low is-fuel-available))
           (should-mix-fuel (and is-steam-temperature-low is-exhaust-pressure-low (not is-fuel-overpressured)))
@@ -113,8 +123,10 @@
           )
           (steam-drain-pwm-outcome (funcall steam-drain-pwm *draining-rate*))
           (exhaust-drain-pwm-outcome (funcall exhaust-drain-pwm *draining-rate*))
+          (furnace-drain-pwm-outcome (funcall furnace-drain-pwm *draining-rate*))
           (should-drain-steam (and steam-drain-pwm-outcome is-steam-pressure-high))
           (should-drain-exhaust (and exhaust-drain-pwm-outcome is-exhaust-pressure-high))
+          (shoudd-drain-furnace (and furnace-drain-pwm-outcome is-furnace-drain-active))
         )
 
         (when (eq *operation-state* 'cold)

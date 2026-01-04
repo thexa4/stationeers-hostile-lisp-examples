@@ -57,7 +57,7 @@
           (temperature-ratio (+ 1 (/ (- temperature-setpoint storage-temperature) temperature-bandwidth)))
 
           (should-drain (and is-storage-pressure-too-high *filtration-open* (> temperature-ratio 0)))
-          (should-water-overflow (and (> water-moles 360) (>= water-purity 1)))
+          (should-water-overflow (and (> water-moles 3240) (>= water-purity 1)))
         )
 
         (if (> temperature-ratio 1) (setq temperature-ratio 1))

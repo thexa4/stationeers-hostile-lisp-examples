@@ -28,10 +28,15 @@
       (text-buffer-active t)
       (has-char nil)
       (last-char nil)
+      (furnace-room-gas-sensor (device :name "Furnace - Gas Sensor"))
     )
     (unless box-sensor
       (error "Missing 'Boiler - Box Sensor'")
     )
+    (unless furnace-room-gas-sensor
+      (error "Missing 'Furnace - Gas Sensor'")
+    )
+
 
     (prefetch
       (
@@ -41,6 +46,8 @@
         (furnace-pressure (stationeers::syscall-device-load-async furnace logic-type:pressure))
         (furnace-content (stationeers::syscall-device-load-async furnace logic-type:recipe-hash))
         (furnace-open-state (stationeers::syscall-device-load-async furnace logic-type:open))
+        (furnace-room-pressure (stationeers::syscall-device-load-async furnace-room-gas-sensor logic-type:pressure))
+        (furnace-room-moles (stationeers::syscall-device-load-async furnace-room-gas-sensor logic-type:total-moles))
       )
 
       (setq has-char (listen))
@@ -75,6 +82,14 @@
         )
       )
 
+      (when (eql last-char #\@)
+        (setq last-char nil)
+        (setq *room-pressure-goal* (if (eq *room-pressure-goal* 'pressurized)
+          'vacuum
+          'pressurized
+        ))
+      )
+
       (set-cursor-pos 1 1)
       (write-string "Operating mode: ")
       (if (eq *operation-state* 'cold)
@@ -96,6 +111,18 @@
       (write-line " kPa      ")
       (terpri)
 
+      (write-line "Furnace room:")
+      (write-string "Mode:")
+      (if (eq *room-pressure-goal* 'pressurized)
+        (write-line "Pressurized")
+        (write-line "Vacuum     ")
+      )
+      (write-string (write-to-string (round furnace-room-pressure)))
+      (write-string " kPa (")
+      (write-string (write-to-string (round furnace-room-moles)))
+      (write-line " M)           ")
+      (terpri)
+
       (write-string "Furnace content: ")
       (write-string (write-to-string furnace-content))
       (if (> furnace-open-state 0.5)
@@ -103,7 +130,7 @@
         (write-line " (Close)           ")
       )
       (terpri)
-      
+
       (write-string "Press ! to switch modes: ")
       (if last-char
         (write-char last-char)
