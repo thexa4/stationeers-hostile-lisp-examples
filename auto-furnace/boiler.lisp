@@ -106,7 +106,11 @@
 
           (should-burn-fuel (and is-steam-temperature-low is-exhaust-pressure-low is-fuel-available))
           (should-mix-fuel (and is-steam-temperature-low is-exhaust-pressure-low (not is-fuel-overpressured)))
-          (should-feed-steam (< box-pressure-ratio box-temperature-ratio))
+          (should-feed-steam (and
+              (< box-pressure-ratio box-temperature-ratio)
+              (> box-temperature 2000)
+            )
+          )
           (steam-drain-pwm-outcome (funcall steam-drain-pwm *draining-rate*))
           (exhaust-drain-pwm-outcome (funcall exhaust-drain-pwm *draining-rate*))
           (should-drain-steam (and steam-drain-pwm-outcome is-steam-pressure-high))

@@ -24,6 +24,7 @@
   (let
     (
       (box-sensor (device :name "Boiler - Box Sensor"))
+      (furnace (device :name "Boiler - Furnace"))
       (text-buffer-active t)
       (has-char nil)
       (last-char nil)
@@ -36,6 +37,10 @@
       (
         (box-temperature (stationeers::syscall-device-load-async box-sensor logic-type:temperature))
         (box-pressure (stationeers::syscall-device-load-async box-sensor logic-type:pressure))
+        (furnace-temperature (stationeers::syscall-device-load-async furnace logic-type:temperature))
+        (furnace-pressure (stationeers::syscall-device-load-async furnace logic-type:pressure))
+        (furnace-content (stationeers::syscall-device-load-async furnace logic-type:recipe-hash))
+        (furnace-open-state (stationeers::syscall-device-load-async furnace logic-type:open))
       )
 
       (setq has-char (listen))
@@ -62,18 +67,43 @@
         ))
       )
 
+      (when (eql last-char #\e)
+        (setq last-char nil)
+        (if (> furnace-open-state 0.5)
+          (stationeers::syscall-device-store-async furnace logic-type:open 0)
+          (stationeers::syscall-device-store-async furnace logic-type:open 1)
+        )
+      )
+
       (set-cursor-pos 1 1)
       (write-string "Operating mode: ")
       (if (eq *operation-state* 'cold)
         (write-line "Cold   ")
         (write-line "Hot    ")
       )
-      (write-line "Steam:")
+
+      (write-line "Steam box:")
       (write-string (write-to-string (round box-temperature)))
       (write-line " K       ")
       (write-string (write-to-string (round box-pressure)))
       (write-line " kPa      ")
       (terpri)
+      
+      (write-line "Boiler furnace:")
+      (write-string (write-to-string (round furnace-temperature)))
+      (write-line " K       ")
+      (write-string (write-to-string (round furnace-pressure)))
+      (write-line " kPa      ")
+      (terpri)
+
+      (write-string "Furnace content: ")
+      (write-string (write-to-string furnace-content))
+      (if (> furnace-open-state 0.5)
+        (write-line " (Open)            ")
+        (write-line " (Close)           ")
+      )
+      (terpri)
+      
       (write-string "Press ! to switch modes: ")
       (if last-char
         (write-char last-char)
