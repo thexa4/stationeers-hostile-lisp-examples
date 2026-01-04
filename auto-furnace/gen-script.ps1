@@ -18,6 +18,7 @@ Include pipe-buster.lisp
 Include boiler.lisp
 Include condensation.lisp
 Include filtration.lisp
+Include room-pressure-control.lisp
 Include ui.lisp
 
 # End Modules

@@ -29,7 +29,7 @@
     (setf (device-logic drain logic-type:on) 0)
     (setf (device-logic drain logic-type:setting) 10)
     (setf (device-logic water-overflow logic-type:on) 0)
-    (setf (device-logic water-overflow logic-type:setting) 1)
+    (setf (device-logic water-overflow logic-type:setting) 90)
     (setf (device-logic storage-sensor logic-type:on) 0)
     (setf (device-logic storage-sensor logic-type:lock) 1)
     (setf (device-logic water-sensor logic-type:on) 0)
@@ -41,7 +41,8 @@
         (storage-pressure (stationeers::syscall-device-load-async storage-sensor logic-type:pressure-output))
         (water-pressure (stationeers::syscall-device-load-async water-sensor logic-type:pressure-output))
         (water-temperature (stationeers::syscall-device-load-async water-sensor logic-type:temperature-output))
-        (water-purity (stationeers::syscall-device-load-async water-sensor logic-type:ratio-water))
+        (water-purity (stationeers::syscall-device-load-async water-sensor logic-type:ratio-water-output))
+        (water-moles (stationeers::syscall-device-load-async water-sensor logic-type:total-moles-output))
 
         (drain-on (stationeers::syscall-device-load-async drain logic-type:on))
         (water-overflow-on (stationeers::syscall-device-load-async water-overflow logic-type:on))
@@ -56,6 +57,7 @@
           (temperature-ratio (+ 1 (/ (- temperature-setpoint storage-temperature) temperature-bandwidth)))
 
           (should-drain (and is-storage-pressure-too-high *filtration-open* (> temperature-ratio 0)))
+          (should-water-overflow (and (> water-moles 3240) (>= water-purity 1)))
         )
 
         (if (> temperature-ratio 1) (setq temperature-ratio 1))
@@ -70,6 +72,7 @@
         )
 
         (ensure-power drain is-draining should-drain)
+        (ensure-power water-overflow is-water-overflowing should-water-overflow)
       )
     )
   )
