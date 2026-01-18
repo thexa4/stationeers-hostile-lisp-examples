@@ -19,6 +19,7 @@
       (input-switches-inverted (devices :name (concatenate 'string prefix " - Switch Outer")))
       (input-locks (devices :name (concatenate 'string prefix " - Lock")))
       (input-poweroff (devices :name (concatenate 'string prefix " - PowerOff")))
+      (input-forceclose (devices :name (concatenate 'string prefix " - ForceClose")))
 
       (state-current 'unknown)
       (state-atmosphere 'unknown)
@@ -44,6 +45,7 @@
       (fetched-proximity-sensor-activate nil)
       (fetched-inputs-power nil)
       (fetched-inputs-lock nil)
+      (fetched-inputs-forceclose nil)
       (fetched-inputs-switches nil)
       (fetched-inputs-switches-inverted nil)
     )
@@ -64,6 +66,7 @@
     (if input-switches-inverted (write-line "Found inverted input switches"))
     (if input-locks (write-line "Found input locks"))
     (if input-poweroff (write-line "Found input poweroff switches"))
+    (if input-forceclose (write-line "Found input forceclose switches"))
     (write-line "Finishing intialization, can take up to 60 seconds.")
 
     (labels
@@ -83,6 +86,7 @@
         (update-fetched ()
           (setq fetched-inputs-power (loop for id in input-poweroff collect (stationeers::syscall-device-load-async id logic-type:setting)))
           (setq fetched-inputs-lock (loop for id in input-locks collect (stationeers::syscall-device-load-async id logic-type:setting)))
+          (setq fetched-inputs-forceclose (loop for id in input-forceclose collect (stationeers::syscall-device-load-async id logic-type:setting)))
           (setq fetched-inputs-switches (loop for id in input-switches collect (stationeers::syscall-device-load-async id logic-type:setting)))
           (setq fetched-inputs-switches-inverted (loop for id in input-switches-inverted collect (stationeers::syscall-device-load-async id logic-type:setting)))
           
@@ -273,6 +277,9 @@
           
           (stationeers::syscall-device-store-async outer-door logic-type:setting 0)
           (stationeers::syscall-device-store-async inner-door logic-type:setting 0)
+          (loop for id in input-poweroff collect (stationeers::syscall-device-store-async id logic-type:setting 0))
+          (loop for id in input-locks collect (stationeers::syscall-device-store-async id logic-type:setting 0))
+          (loop for id in input-forceclose collect (stationeers::syscall-device-store-async id logic-type:setting 0))
 
           (let
             (
@@ -384,7 +391,7 @@
                   (setf (device-logic outer-vent logic-type:on) 0)
                   (setq state-venting nil)
                 )
-                (return-from handle-state-inner nil)
+                (return-from handle-state-outer nil)
               )
               (when should-vent-pressure
                 (write-string prefix)
@@ -392,7 +399,7 @@
                 (setf (device-logic outer-vent logic-type:mode) 0)
                 (setf (device-logic outer-vent logic-type:on) 1)
                 (setq state-venting t)
-                (return-from handle-state-inner nil)
+                (return-from handle-state-outer nil)
               )
             )
 
@@ -451,6 +458,8 @@
               (pressure-orig (funcall fetched-gas-sensor-pressure))
               (pressure (or pressure-orig 1000))
               (progress (/ pressure (+ state-inner-pressure 0.1)))
+              (forceclose-switches (await-all fetched-inputs-forceclose))
+              (forceclose-sum (apply #'+ (loop for x in forceclose-switches when x collect x)))
             )
 
             (if (null pressure-orig)
@@ -460,7 +469,10 @@
             (setf (device-logic output-progress logic-type:setting) (- 0.5 (* progress 0.5)))
 
             (when (= 0 pressure)
-              (switch-state 'pressurize-outer)
+              (if (< forceclose-sum 0.5)
+                (switch-state 'pressurize-outer)
+                (stationeers::syscall-device-store-async inner-vent logic-type:on 0)
+              )
             )
           )
         )

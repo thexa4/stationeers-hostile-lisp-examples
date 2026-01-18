@@ -1,5 +1,5 @@
 
-(defun arc-furnace-excess (fail fetch update &key (name "") (threshold 0.7))
+(defun arc-furnace-excess (fail fetch update &key (name "") (threshold 0.05))
   (let*
     (
       (arc-furnace (device :name name :prefab-name "StructureArcFurnace"))
