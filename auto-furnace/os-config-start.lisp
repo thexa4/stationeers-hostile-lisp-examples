@@ -5,6 +5,8 @@
 (defvar *next-filtration-open* nil)
 (defvar *filtration-required* t)
 (defvar *next-filtration-required* nil)
+(defvar *room-pressure-goal*  10)
+(defvar *operation-state* 'cold)
 
 (write-line "Configuring modules")
 
